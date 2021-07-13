@@ -36,12 +36,21 @@ type test struct {
 	passed   bool
 }
 
-type stats struct {
-	packageDurations map[pkg]time.Duration
-	tests            map[id]*test
+type testmap struct {
+	tests map[id]*test
 }
 
-func (s *stats) testsSortedByDurationDescending() ([]*test, []time.Duration) {
+func (s *testmap) merge(more ...testmap) testmap {
+	result := make(map[id]*test)
+	for _, x := range append([]testmap{*s}, more...) {
+		for k, v := range x.tests {
+			result[k] = v
+		}
+	}
+	return testmap{result}
+}
+
+func (s *testmap) testsSortedByDurationDescending() ([]*test, []time.Duration) {
 	var ks []*test
 	var vs []time.Duration
 	for _, v := range s.tests {
@@ -54,13 +63,16 @@ func (s *stats) testsSortedByDurationDescending() ([]*test, []time.Duration) {
 	sort.Slice(ks, byDurationDesc)
 	sort.Slice(vs, byDurationDesc)
 	return ks, vs
-
 }
 
-func (s *stats) packagesSortedByDurationDescending() ([]pkg, []time.Duration) {
+type pkgdurs struct {
+	pkgs map[pkg]time.Duration
+}
+
+func (s *pkgdurs) packagesSortedByDurationDescending() ([]pkg, []time.Duration) {
 	var ks []pkg
 	var vs []time.Duration
-	for k, v := range s.packageDurations {
+	for k, v := range s.pkgs {
 		ks = append(ks, k)
 		vs = append(vs, v)
 	}
@@ -107,7 +119,7 @@ func readFile(path string) ([]RawLine, error) {
 	return lines, nil
 }
 
-func arrangeTests(lines []RawLine) map[id]*test {
+func newTestmap(lines []RawLine) testmap {
 	m := make(map[id]*test)
 	for _, line := range lines {
 		if !line.isValid() || line.Action != "run" {
@@ -130,38 +142,33 @@ func arrangeTests(lines []RawLine) map[id]*test {
 			t.duration = line.Time.Sub(t.started)
 			t.passed = true
 		case "fail":
-			fmt.Printf("Fail!\n")
 			t := m[testId(line.Package, line.Test)]
 			t.duration = line.Time.Sub(t.started)
 			t.passed = false
-		default:
-			break
 		}
 	}
-	return m
+	return testmap{m}
 }
 
-func summarizePackageTimings(tests map[id]*test) map[pkg]time.Duration {
-	durs := make(map[pkg]time.Duration)
-	for _, t := range tests {
-		durs[t.pkg] = durs[t.pkg] + t.duration
-	}
-	return durs
-}
-
-func computeStatsData(files []string) *stats {
-	stats := &stats{}
-	var lines []RawLine
+func newTestmapFromFiles(files []string) testmap {
+	m := newTestmap(nil)
+	var more []testmap
 	for _, a := range files {
-		moreLines, err := readFile(a)
+		lines, err := readFile(a)
 		if err != nil {
 			log.Fatal(err)
 		}
-		lines = append(lines, moreLines...)
+		more = append(more, newTestmap(lines))
 	}
-	stats.tests = arrangeTests(lines)
-	stats.packageDurations = summarizePackageTimings(stats.tests)
-	return stats
+	return m.merge(more...)
+}
+
+func computePackageDurations(tm testmap) pkgdurs {
+	durs := make(map[pkg]time.Duration)
+	for _, t := range tm.tests {
+		durs[t.pkg] = durs[t.pkg] + t.duration
+	}
+	return pkgdurs{durs}
 }
 
 func main() {
@@ -182,14 +189,14 @@ func main() {
 		fmt.Printf("The `-statistic` flag is required.\n\n")
 		flag.Usage()
 	case "pkg-time":
-		stats := computeStatsData(args)
-		pkgs, pkgDurs := stats.packagesSortedByDurationDescending()
+		tm := newTestmapFromFiles(args)
+		d := computePackageDurations(tm)
+		pkgs, pkgDurs := d.packagesSortedByDurationDescending()
 		for i, pkg := range pkgs {
 			fmt.Printf("%s\t%v\n", pkg, pkgDurs[i])
 		}
-		return
 	case "test-time":
-		stats := computeStatsData(args)
+		stats := newTestmapFromFiles(args)
 		tests, testDurs := stats.testsSortedByDurationDescending()
 		for i, t := range tests {
 			var status string
@@ -200,7 +207,6 @@ func main() {
 			}
 			fmt.Printf("%s\t%s\t%v\t%s\n", t.name, t.pkg, testDurs[i], status)
 		}
-		break
 	default:
 		fmt.Printf("The `-statistic` flag is must be one of `pkg-time`, `test-time`.\n\n")
 		flag.Usage()
