@@ -13,7 +13,7 @@ import (
 
 type id = string
 
-type pkg = string
+type pkgid = string
 
 type RawLine struct {
 	Action  string    `json:"Action"`
@@ -21,36 +21,34 @@ type RawLine struct {
 	Test    string    `json:"Test"`
 	Output  string    `json:"Output"`
 	Time    time.Time `json:"Time"`
-}
-
-func (l *RawLine) isValid() bool {
-	var time0 time.Time
-	return l.Time.After(time0) && l.Test != "" && l.Package != "" && l.Action != ""
+	Elapsed float64   `json:"Elapsed"`
 }
 
 type test struct {
-	pkg      pkg
+	pkg      pkgid
 	name     string
-	started  time.Time
 	duration time.Duration
 	passed   bool
 }
 
-type testmap struct {
-	tests map[id]*test
+type pkg struct {
+	id       pkgid
+	duration time.Duration
 }
 
-func (s *testmap) merge(more ...testmap) testmap {
-	result := make(map[id]*test)
-	for _, x := range append([]testmap{*s}, more...) {
-		for k, v := range x.tests {
-			result[k] = v
-		}
+type stats struct {
+	packages map[pkgid]*pkg
+	tests    map[id]*test
+}
+
+func newStats() *stats {
+	return &stats{
+		packages: make(map[pkgid]*pkg),
+		tests:    make(map[id]*test),
 	}
-	return testmap{result}
 }
 
-func (s *testmap) testsSortedByDurationDescending() []*test {
+func (s *stats) testsSortedByDurationDescending() []*test {
 	var out []*test
 	for _, t := range s.tests {
 		out = append(out, t)
@@ -59,25 +57,16 @@ func (s *testmap) testsSortedByDurationDescending() []*test {
 	return out
 }
 
-type pkgdurs struct {
-	pkgs map[pkg]time.Duration
-}
-
-type pkgdur struct {
-	pkg string
-	dur time.Duration
-}
-
-func (s *pkgdurs) packagesSortedByDurationDescending() []pkgdur {
-	var out []pkgdur
-	for k, v := range s.pkgs {
-		out = append(out, pkgdur{k, v})
+func (s *stats) packagesSortedByDurationDescending() []*pkg {
+	var out []*pkg
+	for _, p := range s.packages {
+		out = append(out, p)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[j].dur < out[i].dur })
+	sort.Slice(out, func(i, j int) bool { return out[j].duration < out[i].duration })
 	return out
 }
 
-func testId(pkg pkg, name string) id {
+func testId(pkg pkgid, name string) id {
 	return fmt.Sprintf("%s#%s", pkg, name)
 }
 
@@ -112,56 +101,52 @@ func readFile(path string) ([]RawLine, error) {
 	return lines, nil
 }
 
-func newTestmap(lines []RawLine) testmap {
-	m := make(map[id]*test)
+func newStatsFromLines(s *stats, lines []RawLine) {
+	var time0 time.Time
 	for _, line := range lines {
-		if !line.isValid() || line.Action != "run" {
+		isValid := line.Time.After(time0) && line.Package != "" && line.Action != ""
+		if !isValid {
 			continue
 		}
-		t := &test{
-			pkg:     line.Package,
-			name:    line.Test,
-			started: line.Time,
+		if line.Test != "" {
+			t := &test{
+				pkg:      line.Package,
+				name:     line.Test,
+				duration: time.Duration(line.Elapsed * float64(time.Second)),
+			}
+			switch line.Action {
+			case "pass":
+				t.passed = true
+				s.tests[testId(line.Package, line.Test)] = t
+			case "fail":
+				t.passed = false
+				s.tests[testId(line.Package, line.Test)] = t
+			}
+		} else {
+			p := &pkg{
+				id:       line.Package,
+				duration: time.Duration(line.Elapsed * float64(time.Second)),
+			}
+			switch line.Action {
+			case "pass":
+				s.packages[line.Package] = p
+			case "fail":
+				s.packages[line.Package] = p
+			}
 		}
-		m[testId(line.Package, line.Test)] = t
 	}
-	for _, line := range lines {
-		if !line.isValid() {
-			continue
-		}
-		switch line.Action {
-		case "pass":
-			t := m[testId(line.Package, line.Test)]
-			t.duration = line.Time.Sub(t.started)
-			t.passed = true
-		case "fail":
-			t := m[testId(line.Package, line.Test)]
-			t.duration = line.Time.Sub(t.started)
-			t.passed = false
-		}
-	}
-	return testmap{m}
 }
 
-func newTestmapFromFiles(files []string) testmap {
-	m := newTestmap(nil)
-	var more []testmap
+func newStatsFromFiles(files []string) *stats {
+	s := newStats()
 	for _, a := range files {
 		lines, err := readFile(a)
 		if err != nil {
 			log.Fatal(err)
 		}
-		more = append(more, newTestmap(lines))
+		newStatsFromLines(s, lines)
 	}
-	return m.merge(more...)
-}
-
-func computePackageDurations(tm testmap) pkgdurs {
-	durs := make(map[pkg]time.Duration)
-	for _, t := range tm.tests {
-		durs[t.pkg] = durs[t.pkg] + t.duration
-	}
-	return pkgdurs{durs}
+	return s
 }
 
 func main() {
@@ -182,14 +167,13 @@ func main() {
 		fmt.Printf("The `-statistic` flag is required.\n\n")
 		flag.Usage()
 	case "pkg-time":
-		tm := newTestmapFromFiles(args)
-		d := computePackageDurations(tm)
-		pkgdurs := d.packagesSortedByDurationDescending()
+		stats := newStatsFromFiles(args)
+		pkgdurs := stats.packagesSortedByDurationDescending()
 		for _, pkgdur := range pkgdurs {
-			fmt.Printf("%s\t%v\n", pkgdur.pkg, pkgdur.dur)
+			fmt.Printf("%s\t%v\n", pkgdur.id, pkgdur.duration)
 		}
 	case "test-time":
-		stats := newTestmapFromFiles(args)
+		stats := newStatsFromFiles(args)
 		tests := stats.testsSortedByDurationDescending()
 		for _, t := range tests {
 			var status string
