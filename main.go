@@ -79,9 +79,11 @@ func (s *stats) testsSortedByDurationDescending() ([]*test, []time.Duration) {
 		ks = append(ks, v)
 		vs = append(vs, v.duration)
 	}
-	sort.Slice(ks, func(i, j int) bool {
+	byDurationDesc := func(i, j int) bool {
 		return vs[j] < vs[i]
-	})
+	}
+	sort.Slice(ks, byDurationDesc)
+	sort.Slice(vs, byDurationDesc)
 	return ks, vs
 
 }
@@ -93,9 +95,11 @@ func (s *stats) packagesSortedByDurationDescending() ([]pkg, []time.Duration) {
 		ks = append(ks, k)
 		vs = append(vs, v)
 	}
-	sort.Slice(ks, func(i, j int) bool {
+	byDurationDesc := func(i, j int) bool {
 		return vs[j] < vs[i]
-	})
+	}
+	sort.Slice(ks, byDurationDesc)
+	sort.Slice(vs, byDurationDesc)
 	return ks, vs
 }
 
