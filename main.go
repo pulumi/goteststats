@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+type id = string
+
+type pkg = string
+
 type RawLine struct {
 	Action  string    `json:"Action"`
 	Package string    `json:"Package"`
@@ -19,9 +23,10 @@ type RawLine struct {
 	Time    time.Time `json:"Time"`
 }
 
-type id = string
-
-type pkg = string
+func (l *RawLine) isValid() bool {
+	var time0 time.Time
+	return l.Time.After(time0) && l.Test != "" && l.Package != "" && l.Action != ""
+}
 
 type test struct {
 	pkg      pkg
@@ -34,42 +39,6 @@ type test struct {
 type stats struct {
 	packageDurations map[pkg]time.Duration
 	tests            map[id]*test
-}
-
-func newStats() *stats {
-	return &stats{
-		packageDurations: make(map[pkg]time.Duration),
-		tests:            make(map[id]*test),
-	}
-}
-
-func (s *stats) add(line RawLine) {
-	if line.Test == "" {
-		return
-	}
-
-	id := testId(line.Package, line.Test)
-
-	t, haveT := s.tests[id]
-
-	if !haveT {
-		t = &test{
-			pkg:  line.Package,
-			name: line.Test,
-		}
-		s.tests[id] = t
-	}
-
-	switch line.Action {
-	case "run":
-		t.started = line.Time
-	case "pass":
-		t.passed = true
-		t.duration = line.Time.Sub(t.started)
-
-		d := s.packageDurations[line.Package]
-		s.packageDurations[line.Package] = d + t.duration
-	}
 }
 
 func (s *stats) testsSortedByDurationDescending() ([]*test, []time.Duration) {
@@ -107,45 +76,91 @@ func testId(pkg pkg, name string) id {
 	return fmt.Sprintf("%s#%s", pkg, name)
 }
 
-func readFile(path string, visitRawLine func(RawLine) error) error {
+func readFile(path string) ([]RawLine, error) {
+	var lines []RawLine
+
 	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
 	scanner.Split(bufio.ScanLines)
 
+	var time0 time.Time
+
 	for scanner.Scan() {
 		line := scanner.Text()
 
 		var rawLine RawLine
 		err := json.Unmarshal([]byte(line), &rawLine)
-		if err != nil {
-			return err
-		}
 
-		err = visitRawLine(rawLine)
 		if err != nil {
-			return err
+			return nil, err
+		}
+		if rawLine.Time.After(time0) {
+			lines = append(lines, rawLine)
 		}
 	}
 
-	return nil
+	return lines, nil
+}
+
+func arrangeTests(lines []RawLine) map[id]*test {
+	m := make(map[id]*test)
+	for _, line := range lines {
+		if !line.isValid() || line.Action != "run" {
+			continue
+		}
+		t := &test{
+			pkg:     line.Package,
+			name:    line.Test,
+			started: line.Time,
+		}
+		m[testId(line.Package, line.Test)] = t
+	}
+	for _, line := range lines {
+		if !line.isValid() {
+			continue
+		}
+		switch line.Action {
+		case "pass":
+			t := m[testId(line.Package, line.Test)]
+			t.duration = line.Time.Sub(t.started)
+			t.passed = true
+		case "fail":
+			fmt.Printf("Fail!\n")
+			t := m[testId(line.Package, line.Test)]
+			t.duration = line.Time.Sub(t.started)
+			t.passed = false
+		default:
+			break
+		}
+	}
+	return m
+}
+
+func summarizePackageTimings(tests map[id]*test) map[pkg]time.Duration {
+	durs := make(map[pkg]time.Duration)
+	for _, t := range tests {
+		durs[t.pkg] = durs[t.pkg] + t.duration
+	}
+	return durs
 }
 
 func computeStatsData(files []string) *stats {
-	stats := newStats()
+	stats := &stats{}
+	var lines []RawLine
 	for _, a := range files {
-		err := readFile(a, func(line RawLine) error {
-			stats.add(line)
-			return nil
-		})
+		moreLines, err := readFile(a)
 		if err != nil {
 			log.Fatal(err)
 		}
+		lines = append(lines, moreLines...)
 	}
+	stats.tests = arrangeTests(lines)
+	stats.packageDurations = summarizePackageTimings(stats.tests)
 	return stats
 }
 
