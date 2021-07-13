@@ -50,38 +50,31 @@ func (s *testmap) merge(more ...testmap) testmap {
 	return testmap{result}
 }
 
-func (s *testmap) testsSortedByDurationDescending() ([]*test, []time.Duration) {
-	var ks []*test
-	var vs []time.Duration
-	for _, v := range s.tests {
-		ks = append(ks, v)
-		vs = append(vs, v.duration)
+func (s *testmap) testsSortedByDurationDescending() []*test {
+	var out []*test
+	for _, t := range s.tests {
+		out = append(out, t)
 	}
-	byDurationDesc := func(i, j int) bool {
-		return vs[j] < vs[i]
-	}
-	sort.Slice(ks, byDurationDesc)
-	sort.Slice(vs, byDurationDesc)
-	return ks, vs
+	sort.Slice(out, func(i, j int) bool { return out[j].duration < out[i].duration })
+	return out
 }
 
 type pkgdurs struct {
 	pkgs map[pkg]time.Duration
 }
 
-func (s *pkgdurs) packagesSortedByDurationDescending() ([]pkg, []time.Duration) {
-	var ks []pkg
-	var vs []time.Duration
+type pkgdur struct {
+	pkg string
+	dur time.Duration
+}
+
+func (s *pkgdurs) packagesSortedByDurationDescending() []pkgdur {
+	var out []pkgdur
 	for k, v := range s.pkgs {
-		ks = append(ks, k)
-		vs = append(vs, v)
+		out = append(out, pkgdur{k, v})
 	}
-	byDurationDesc := func(i, j int) bool {
-		return vs[j] < vs[i]
-	}
-	sort.Slice(ks, byDurationDesc)
-	sort.Slice(vs, byDurationDesc)
-	return ks, vs
+	sort.Slice(out, func(i, j int) bool { return out[j].dur < out[i].dur })
+	return out
 }
 
 func testId(pkg pkg, name string) id {
@@ -191,21 +184,21 @@ func main() {
 	case "pkg-time":
 		tm := newTestmapFromFiles(args)
 		d := computePackageDurations(tm)
-		pkgs, pkgDurs := d.packagesSortedByDurationDescending()
-		for i, pkg := range pkgs {
-			fmt.Printf("%s\t%v\n", pkg, pkgDurs[i])
+		pkgdurs := d.packagesSortedByDurationDescending()
+		for _, pkgdur := range pkgdurs {
+			fmt.Printf("%s\t%v\n", pkgdur.pkg, pkgdur.dur)
 		}
 	case "test-time":
 		stats := newTestmapFromFiles(args)
-		tests, testDurs := stats.testsSortedByDurationDescending()
-		for i, t := range tests {
+		tests := stats.testsSortedByDurationDescending()
+		for _, t := range tests {
 			var status string
 			if t.passed {
 				status = "pass"
 			} else {
 				status = "fail"
 			}
-			fmt.Printf("%s\t%s\t%v\t%s\n", t.name, t.pkg, testDurs[i], status)
+			fmt.Printf("%s\t%s\t%v\t%s\n", t.name, t.pkg, t.duration, status)
 		}
 	default:
 		fmt.Printf("The `-statistic` flag is must be one of `pkg-time`, `test-time`.\n\n")
