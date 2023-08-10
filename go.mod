@@ -1,3 +1,3 @@
-module github.com/t0yv0/goteststats
+module github.com/pulumi/goteststats
 
-go 1.16
+go 1.20
